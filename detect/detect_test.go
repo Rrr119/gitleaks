@@ -826,6 +826,97 @@ const token = "mockSecret";
 	}
 }
 
+func TestDetectDSL(t *testing.T) {
+	tests := map[string]struct {
+		fragment         Fragment
+		expectedFindings []report.Finding
+	}{
+		"combo rule: all conditions met": {
+			fragment: Fragment{
+				Raw:      `awsToken := \"AKIALALEMEL33243OKIA\" # secret`,
+				FilePath: "tmp.go",
+			},
+			expectedFindings: []report.Finding{
+				{
+					Description: "DSL combo rule",
+					Secret:      "AKIALALEMEL33243OKIA",
+					Match:       "AKIALALEMEL33243OKIA",
+					File:        "tmp.go",
+					Line:        `awsToken := \"AKIALALEMEL33243OKIA\" # secret`,
+					RuleID:      "dsl-combo",
+					Tags:        []string{"key", "aws"},
+					StartLine:   0,
+					EndLine:     0,
+					StartColumn: 15,
+					EndColumn:   34,
+					Entropy:     3.1464393,
+				},
+			},
+		},
+		"combo rule: missing combined regex": {
+			fragment: Fragment{
+				Raw:      `awsToken := \"AKIALALEMEL33243OKIA\"`,
+				FilePath: "tmp.go",
+			},
+		},
+		"combo rule: path allowlisted": {
+			fragment: Fragment{
+				Raw:      `awsToken := \"AKIALALEMEL33243OKIA\" # secret`,
+				FilePath: "testdata/tmp.go",
+			},
+		},
+		"entropy rule: high entropy secret": {
+			fragment: Fragment{
+				Raw:      `token = "x9Kf2mQ8vLw3jR7p"`,
+				FilePath: "config.go",
+			},
+			expectedFindings: []report.Finding{
+				{
+					Description: "DSL entropy rule",
+					Secret:      "x9Kf2mQ8vLw3jR7p",
+					Match:       `token = "x9Kf2mQ8vLw3jR7p"`,
+					File:        "config.go",
+					Line:        `token = "x9Kf2mQ8vLw3jR7p"`,
+					RuleID:      "dsl-entropy",
+					Tags:        []string{},
+					StartLine:   0,
+					EndLine:     0,
+					StartColumn: 1,
+					EndColumn:   26,
+					Entropy:     4,
+				},
+			},
+		},
+		"entropy rule: low entropy secret skipped": {
+			fragment: Fragment{
+				Raw:      `token = "aaaaaaaaaaaaaaaa"`,
+				FilePath: "config.go",
+			},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			viper.Reset()
+			viper.AddConfigPath(configPath)
+			viper.SetConfigName("dsl")
+			viper.SetConfigType("toml")
+			require.NoError(t, viper.ReadInConfig())
+
+			var vc config.ViperConfig
+			require.NoError(t, viper.Unmarshal(&vc))
+			cfg, err := vc.Translate()
+			require.NoError(t, err)
+
+			d := NewDetector(cfg)
+			d.MaxDecodeDepth = maxDecodeDepth
+
+			findings := d.Detect(tt.fragment)
+			compare(t, findings, tt.expectedFindings)
+		})
+	}
+}
+
 func stripANSI(s string) string {
 	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	return ansiRegex.ReplaceAllString(s, "")

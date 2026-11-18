@@ -98,12 +98,22 @@ func TestTranslate(t *testing.T) {
 		{
 			cfgName:   "invalid/rule_no_regex_or_path",
 			cfg:       Config{},
-			wantError: errors.New("discord-api-key: both |regex| and |path| are empty, this rule will have no effect"),
+			wantError: errors.New("discord-api-key: |regex|, |path|, and |dsl| are empty, this rule will have no effect"),
 		},
 		{
 			cfgName:   "invalid/rule_bad_entropy_group",
 			cfg:       Config{},
 			wantError: errors.New("discord-api-key: invalid regex secret group 5, max regex secret group 3"),
+		},
+		{
+			cfgName:   "invalid/rule_dsl_and_regex",
+			cfg:       Config{},
+			wantError: errors.New("acme-combo-key: |dsl| cannot be combined with |regex|, |path|, |entropy|, or |secretGroup|, express them in the DSL instead"),
+		},
+		{
+			cfgName:   "invalid/rule_dsl_invalid_expression",
+			cfg:       Config{},
+			wantError: errors.New("acme-combo-key: invalid |dsl|: unexpected end of expression at position 29"),
 		},
 	}
 	for _, tt := range tests {
@@ -111,6 +121,33 @@ func TestTranslate(t *testing.T) {
 			testTranslate(t, tt)
 		})
 	}
+}
+
+func TestTranslateDSL(t *testing.T) {
+	t.Cleanup(func() {
+		extendDepth = 0
+		viper.Reset()
+	})
+
+	viper.AddConfigPath(configPath)
+	viper.SetConfigName("valid/rule_dsl")
+	viper.SetConfigType("toml")
+	require.NoError(t, viper.ReadInConfig())
+
+	var vc ViperConfig
+	require.NoError(t, viper.Unmarshal(&vc))
+	cfg, err := vc.Translate()
+	require.NoError(t, err)
+
+	rule, ok := cfg.Rules["acme-combo-key"]
+	require.True(t, ok, "expected rule acme-combo-key to exist")
+	require.NotNil(t, rule.DSL, "expected rule to have a compiled DSL expression")
+	assert.Nil(t, rule.Regex)
+	assert.Nil(t, rule.Path)
+
+	// The expression must contain a single match() term.
+	require.Len(t, rule.DSL.MatchTerms(), 1)
+	assert.Equal(t, `AKIA[0-9A-Z]{16}`, rule.DSL.MatchTerms()[0].Regex.String())
 }
 
 func TestTranslateAllowlists(t *testing.T) {

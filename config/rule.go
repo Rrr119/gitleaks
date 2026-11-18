@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/zricethezav/gitleaks/v8/config/dsl"
 	"github.com/zricethezav/gitleaks/v8/regexp"
 )
 
@@ -27,6 +28,12 @@ type Rule struct {
 
 	// Regex is a golang regular expression used to detect secrets.
 	Regex *regexp.Regexp
+
+	// DSL is a compiled rule expression used to detect secrets. It can
+	// combine multiple regexes, entropy thresholds, and path conditions
+	// with boolean logic. It cannot be combined with |Regex|, |Path|,
+	// |Entropy|, or |SecretGroup|.
+	DSL *dsl.Expr
 
 	// Path is a golang regular expression used to
 	// filter secrets by path
@@ -83,8 +90,14 @@ func (r *Rule) Validate() error {
 	}
 
 	// Ensure the rule actually matches something.
-	if r.Regex == nil && r.Path == nil {
-		return errors.New(r.RuleID + ": both |regex| and |path| are empty, this rule will have no effect")
+	if r.Regex == nil && r.Path == nil && r.DSL == nil {
+		return errors.New(r.RuleID + ": |regex|, |path|, and |dsl| are empty, this rule will have no effect")
+	}
+
+	// |dsl| is mutually exclusive with the plain matching fields, the
+	// equivalent conditions can be expressed in the DSL itself.
+	if r.DSL != nil && (r.Regex != nil || r.Path != nil || r.Entropy != 0 || r.SecretGroup != 0) {
+		return fmt.Errorf("%s: |dsl| cannot be combined with |regex|, |path|, |entropy|, or |secretGroup|, express them in the DSL instead", r.RuleID)
 	}
 
 	// Ensure |secretGroup| works.

@@ -1,0 +1,12 @@
+title = "gitleaks config"
+
+[[rules]]
+id = "dsl-combo"
+description = "DSL combo rule"
+dsl = '''match("AKIA[0-9A-Z]{16}") and match("secret") and not path("testdata/")'''
+tags = ["key", "aws"]
+
+[[rules]]
+id = "dsl-entropy"
+description = "DSL entropy rule"
+dsl = '''match("token = \"([0-9a-zA-Z]{16})\"", 1) and entropy >= 3.0'''

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zricethezav/gitleaks/v8/config"
+	"github.com/zricethezav/gitleaks/v8/config/dsl"
 	"github.com/zricethezav/gitleaks/v8/detect/codec"
 	"github.com/zricethezav/gitleaks/v8/logging"
 	"github.com/zricethezav/gitleaks/v8/regexp"
@@ -390,6 +391,11 @@ func (d *Detector) detectRule(fragment Fragment, currentRaw string, r config.Rul
 		return findings
 	}
 
+	// DSL rules are evaluated with their own detection path.
+	if r.DSL != nil {
+		return d.detectDSLRule(fragment, currentRaw, r, encodedSegments, logger)
+	}
+
 	if r.Path != nil {
 		if r.Regex == nil && len(encodedSegments) == 0 {
 			// Path _only_ rule
@@ -564,6 +570,160 @@ func (d *Detector) detectRule(fragment Fragment, currentRaw string, r config.Rul
 			event.Msg("skipping finding: rule allowlist")
 			continue
 		}
+		findings = append(findings, finding)
+	}
+
+	// Handle required rules (multi-part rules)
+	if fragment.InheritedFromFinding || len(r.RequiredRules) == 0 {
+		return findings
+	}
+
+	// Process required rules and create findings with auxiliary findings
+	return d.processRequiredRules(fragment, currentRaw, r, encodedSegments, findings, logger)
+}
+
+// detectDSLRule scans the given fragment for a rule defined by a DSL
+// expression and returns a list of findings. Candidates are generated from
+// the expression's primary match() term; a candidate is only reported when
+// the whole expression (regex combinations, entropy thresholds, path
+// conditions) evaluates to true for it.
+func (d *Detector) detectDSLRule(fragment Fragment, currentRaw string, r config.Rule, encodedSegments []*codec.EncodedSegment, logger zerolog.Logger) []report.Finding {
+	var findings []report.Finding
+
+	// if flag configure and raw data size bigger then the flag
+	if d.MaxTargetMegaBytes > 0 {
+		rawLength := len(currentRaw) / 1_000_000
+		if rawLength > d.MaxTargetMegaBytes {
+			logger.Debug().
+				Int("size", rawLength).
+				Int("max-size", d.MaxTargetMegaBytes).
+				Msg("skipping fragment: size")
+			return findings
+		}
+	}
+
+	// TODO profile this, probably should replace with something more efficient
+	newlineIndices := newLineRegexp.FindAllStringIndex(fragment.Raw, -1)
+
+	term := r.DSL.Primary()
+	for _, matchIndex := range term.Regex.FindAllStringIndex(currentRaw, -1) {
+		// Extract secret from match
+		secret := strings.Trim(currentRaw[matchIndex[0]:matchIndex[1]], "\n")
+
+		// For any meta data from decoding
+		var metaTags []string
+		currentLine := ""
+
+		// Check if the decoded portions of the segment overlap with the match
+		// to see if its potentially a new match
+		if len(encodedSegments) > 0 {
+			segments := codec.SegmentsWithDecodedOverlap(encodedSegments, matchIndex[0], matchIndex[1])
+			if len(segments) == 0 {
+				// This item has already been added to a finding
+				continue
+			}
+
+			matchIndex = codec.AdjustMatchIndex(segments, matchIndex)
+			metaTags = append(metaTags, codec.Tags(segments)...)
+			currentLine = codec.CurrentLine(segments, currentRaw)
+		} else {
+			// Fixes: https://github.com/gitleaks/gitleaks/issues/1352
+			// removes the incorrectly following line that was detected by regex expression '\n'
+			matchIndex[1] = matchIndex[0] + len(secret)
+		}
+
+		// determine location of match. Note that the location
+		// in the finding will be the line/column numbers of the _match_
+		// not the _secret_, which will be different if a capture group
+		// is set for this match() term
+		loc := location(newlineIndices, fragment.Raw, matchIndex)
+
+		if matchIndex[1] > loc.endLineIndex {
+			loc.endLineIndex = matchIndex[1]
+		}
+
+		finding := report.Finding{
+			Commit:      fragment.CommitSHA,
+			RuleID:      r.RuleID,
+			Description: r.Description,
+			StartLine:   fragment.StartLine + loc.startLine,
+			EndLine:     fragment.StartLine + loc.endLine,
+			StartColumn: loc.startColumn,
+			EndColumn:   loc.endColumn,
+			Line:        fragment.Raw[loc.startLineIndex:loc.endLineIndex],
+			Match:       secret,
+			Secret:      secret,
+			File:        fragment.FilePath,
+			SymlinkFile: fragment.SymlinkFile,
+			Tags:        append(r.Tags, metaTags...),
+		}
+		if fragment.CommitInfo != nil {
+			finding.Author = fragment.CommitInfo.AuthorName
+			finding.Date = fragment.CommitInfo.Date
+			finding.Email = fragment.CommitInfo.AuthorEmail
+			finding.Link = createScmLink(fragment.CommitInfo.Remote, finding)
+			finding.Message = fragment.CommitInfo.Message
+		}
+		if !d.IgnoreGitleaksAllow && strings.Contains(finding.Line, gitleaksAllowSignature) {
+			logger.Trace().
+				Str("finding", finding.Secret).
+				Msg("skipping finding: 'gitleaks:allow' signature")
+			continue
+		}
+
+		if currentLine == "" {
+			currentLine = finding.Line
+		}
+
+		// Set the value of |secret|, if the pattern contains at least one capture group.
+		// (The first element is the full match, hence we check >= 2.)
+		groups := term.Regex.FindStringSubmatch(finding.Secret)
+		if len(groups) >= 2 {
+			if term.Group > 0 {
+				if len(groups) <= term.Group {
+					// DSL validation should prevent this
+					continue
+				}
+				finding.Secret = groups[term.Group]
+			} else {
+				// If no group is set, we will use the first suitable capture group.
+				for _, s := range groups[1:] {
+					if len(s) > 0 {
+						finding.Secret = s
+						break
+					}
+				}
+			}
+		}
+
+		// evaluate the whole expression against this candidate
+		entropy := shannonEntropy(finding.Secret)
+		finding.Entropy = float32(entropy)
+		evalCtx := &dsl.Context{
+			Content:         currentRaw,
+			FilePath:        fragment.FilePath,
+			WindowsFilePath: fragment.WindowsFilePath,
+			Entropy:         entropy,
+		}
+		if !r.DSL.Eval(evalCtx) {
+			logger.Trace().
+				Str("finding", finding.Secret).
+				Msg("skipping finding: dsl expression evaluated to false")
+			continue
+		}
+
+		// check if the result matches any of the global allowlists.
+		if isAllowed, event := checkFindingAllowed(logger, finding, fragment, currentLine, d.Config.Allowlists); isAllowed {
+			event.Msg("skipping finding: global allowlist")
+			continue
+		}
+
+		// check if the result matches any of the rule allowlists.
+		if isAllowed, event := checkFindingAllowed(logger, finding, fragment, currentLine, r.Allowlists); isAllowed {
+			event.Msg("skipping finding: rule allowlist")
+			continue
+		}
+
 		findings = append(findings, finding)
 	}
 

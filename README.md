@@ -483,6 +483,38 @@ fragment = section of data gitleaks is looking at
 
 <details><summary>Some final quick thoughts on composite rules.</summary>This is an experimental feature! It's subject to change so don't go sellin' a new B2B SaaS feature built ontop of this feature. Scan type (git vs dir) based context is interesting. I'm monitoring the situation. Composite rules might not be super useful for git scans because gitleaks only looks at additions in the git history. It could be useful to scan non-additions in git history for `required` rules. Oh, right this is a readme, I'll shut up now.</details>
 
+#### Rule DSL
+
+For detection logic that a single `regex`/`entropy`/`path` combination cannot express, a rule can define a `dsl` expression. The DSL combines multiple content regexes, entropy thresholds, and path conditions with boolean logic:
+
+```toml
+[[rules]]
+id = "acme-internal-key"
+description = "Acme internal key, only outside of test fixtures"
+dsl = '''
+  match("AKIA[0-9A-Z]{16}")
+  and match("(?i)secret")
+  and entropy >= 3.5
+  and not path("testdata/|.*_test\\.go")
+'''
+```
+
+**Predicates:**
+
+- **`match("regex")`** / **`match("regex", group)`** - true when `regex` matches anywhere in the fragment. The optional `group` selects the capture group used as the secret (like `secretGroup`).
+- **`path("regex")`** - true when `regex` matches the file path.
+- **`entropy <op> <number>`** - compares the shannon entropy of the candidate secret. `<op>` is one of `>`, `>=`, `<`, `<=`, `==`, `!=`.
+
+**Operators:** `and` (`&&`), `or` (`||`), `not` (`!`), and parentheses. Keywords are case-insensitive.
+
+**Semantics:** the first `match()` term that is not negated by `not` is the _primary_ pattern - only its matches are reported as findings. All other terms act as conditions on those findings. For example, `match("AKIA[0-9A-Z]{16}") and match("(?i)secret")` only reports the `AKIA...` matches, and only when `secret` also appears in the same fragment.
+
+Notes:
+
+- `dsl` cannot be combined with `regex`, `path`, `entropy`, or `secretGroup` on the same rule; express those conditions in the DSL instead. `keywords`, `tags`, `allowlists`, and `required` work as usual.
+- String literals are double-quoted. Only `\"`, `\\`, `\n`, `\t`, and `\r` are treated as escape sequences; regex classes like `\d`, `\s`, `\w` can be written as-is. Use TOML literal strings (`'''...'''`) to avoid double-escaping.
+- Existing rules using `regex`/`entropy`/`path` are unaffected; the DSL is an optional, additional way to define a rule.
+
 #### gitleaks:allow
 
 If you are knowingly committing a test secret that gitleaks will catch you can add a `gitleaks:allow` comment to that line which will instruct gitleaks

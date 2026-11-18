@@ -10,6 +10,7 @@ import (
 	gv "github.com/hashicorp/go-version"
 	"github.com/spf13/viper"
 
+	"github.com/zricethezav/gitleaks/v8/config/dsl"
 	"github.com/zricethezav/gitleaks/v8/logging"
 	"github.com/zricethezav/gitleaks/v8/regexp"
 	"github.com/zricethezav/gitleaks/v8/version"
@@ -38,6 +39,7 @@ type ViperConfig struct {
 		Description string
 		Path        string
 		Regex       string
+		DSL         string
 		SecretGroup int
 		Entropy     float64
 		Keywords    []string
@@ -148,6 +150,15 @@ func (vc *ViperConfig) Translate() (Config, error) {
 			Keywords:    vr.Keywords,
 			Tags:        vr.Tags,
 			SkipReport:  vr.SkipReport,
+		}
+
+		// Parse the rule DSL expression, if present.
+		if vr.DSL != "" {
+			expr, err := dsl.Parse(vr.DSL)
+			if err != nil {
+				return Config{}, fmt.Errorf("%s: invalid |dsl|: %w", cr.RuleID, err)
+			}
+			cr.DSL = expr
 		}
 
 		// Parse the rule allowlists, including the older format for backwards compatibility.
@@ -468,6 +479,9 @@ func (c *Config) extend(extensionConfig Config) {
 			}
 			if currentRule.Regex != nil {
 				baseRule.Regex = currentRule.Regex
+			}
+			if currentRule.DSL != nil {
+				baseRule.DSL = currentRule.DSL
 			}
 			if currentRule.Path != nil {
 				baseRule.Path = currentRule.Path

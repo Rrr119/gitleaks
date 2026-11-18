@@ -1,0 +1,17 @@
+{
+  "root": "/home/dev/feedback/uid26320",
+  "B": "/home/dev/feedback/uid26320",
+  "sha": "f5be53b544af5002ffdff186c9b27a9bb41ff156",
+  "wslDistro": "Ubuntu-26.04",
+  "source": {
+    "owner": "gitleaks",
+    "repo": "gitleaks",
+    "sha": "f5be53b544af5002ffdff186c9b27a9bb41ff156"
+  },
+  "fork": {
+    "owner": "Rrr119",
+    "repo": "gitleaks",
+    "cloneUrl": "https://github.com/Rrr119/gitleaks.git"
+  },
+  "at": "2026-11-18T16:31:38.025Z"
+}

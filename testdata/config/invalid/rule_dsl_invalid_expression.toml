@@ -1,0 +1,6 @@
+title = "gitleaks config"
+
+[[rules]]
+id = "acme-combo-key"
+description = "Acme combo key"
+dsl = '''match("AKIA[0-9A-Z]{16}") and'''
